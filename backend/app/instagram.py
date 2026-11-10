@@ -7,41 +7,61 @@ import secrets
 import json
 import urllib.parse
 import urllib.request
+import urllib.error
+import threading
 
-from fastapi import APIRouter, HTTPException, Query
-from fastapi.responses import RedirectResponse
 from pathlib import Path
 from dotenv import load_dotenv
-from fastapi import Request
-from fastapi.responses import PlainTextResponse
+from fastapi import APIRouter, HTTPException, Query, Request, BackgroundTasks
+from fastapi.responses import RedirectResponse, PlainTextResponse
+
+from app.services.answer_service import answer_question
+
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 load_dotenv(BASE_DIR / ".env")
+
 router = APIRouter()
 
 META_APP_ID = os.getenv("META_APP_ID")
 META_APP_SECRET = os.getenv("META_APP_SECRET")
 INSTAGRAM_CONFIG_ID = os.getenv("INSTAGRAM_CONFIG_ID")
 INSTAGRAM_REDIRECT_URI = os.getenv("INSTAGRAM_REDIRECT_URI")
+
 INSTAGRAM_WEBHOOK_VERIFY_TOKEN = os.getenv(
     "INSTAGRAM_WEBHOOK_VERIFY_TOKEN"
 )
-GRAPH_API_VERSION = os.getenv("META_GRAPH_API_VERSION", "v25.0")
 
+INSTAGRAM_ACCESS_TOKEN = os.getenv("INSTAGRAM_ACCESS_TOKEN")
+INSTAGRAM_ACCOUNT_ID = os.getenv("INSTAGRAM_ACCOUNT_ID")
+INSTAGRAM_BUSINESS_ID = os.getenv("INSTAGRAM_BUSINESS_ID")
+
+GRAPH_API_VERSION = os.getenv("META_GRAPH_API_VERSION", "v25.0")
 
 LOGIN_URL = "https://www.facebook.com/dialog/oauth"
 
-# Temporary in-memory storage for this prototype.
-# A restart or redeployment clears this data.
+# Prototype-only in-memory storage.
 connected_accounts = {}
 used_states = set()
+processed_comments = set()
+processing_comments = set()
 
+comment_lock = threading.Lock()
+
+
+# -----------------------------------------
+# OAUTH LOGIN
+# -----------------------------------------
 
 def create_state():
+    if not META_APP_SECRET:
+        raise RuntimeError("Meta App Secret is missing")
+
     timestamp = str(int(time.time()))
     nonce = secrets.token_urlsafe(24)
 
     message = f"{timestamp}.{nonce}"
+
     signature = hmac.new(
         META_APP_SECRET.encode(),
         message.encode(),
@@ -81,6 +101,7 @@ def validate_state(state: str):
 
 @router.get("/login")
 def instagram_login():
+
     if not all([
         META_APP_ID,
         META_APP_SECRET,
@@ -118,6 +139,7 @@ def instagram_callback(
     state: str | None = Query(default=None),
     error: str | None = Query(default=None)
 ):
+
     if error:
         raise HTTPException(
             status_code=400,
@@ -133,7 +155,7 @@ def instagram_callback(
     if not validate_state(state):
         raise HTTPException(
             status_code=400,
-            detail="Invalid, expired, or already-used OAuth state."
+            detail="Invalid or expired OAuth state."
         )
 
     params = {
@@ -157,9 +179,8 @@ def instagram_callback(
         access_token = token_data.get("access_token")
 
         if not access_token:
-            raise ValueError("Access token missing from Meta response.")
+            raise ValueError("Access token missing")
 
-        # Never return the access token to the browser.
         connected_accounts["default"] = {
             "access_token": access_token,
             "connected_at": int(time.time())
@@ -171,7 +192,10 @@ def instagram_callback(
         }
 
     except Exception as exc:
-        print(f"Instagram OAuth error: {type(exc).__name__}", flush=True)
+        print(
+            f"Instagram OAuth error: {type(exc).__name__}",
+            flush=True
+        )
 
         raise HTTPException(
             status_code=502,
@@ -179,16 +203,23 @@ def instagram_callback(
         )
 
 
+# -----------------------------------------
+# WEBHOOK VERIFICATION
+# -----------------------------------------
+
 @router.get("/webhook")
 async def verify_instagram_webhook(
     mode: str | None = Query(default=None, alias="hub.mode"),
     verify_token: str | None = Query(
-        default=None, alias="hub.verify_token"
+        default=None,
+        alias="hub.verify_token"
     ),
     challenge: str | None = Query(
-        default=None, alias="hub.challenge"
+        default=None,
+        alias="hub.challenge"
     )
 ):
+
     if not INSTAGRAM_WEBHOOK_VERIFY_TOKEN:
         raise HTTPException(
             status_code=500,
@@ -212,8 +243,205 @@ async def verify_instagram_webhook(
     )
 
 
+# -----------------------------------------
+# SEND INSTAGRAM COMMENT REPLY
+# -----------------------------------------
+
+def send_instagram_reply(comment_id: str, message: str):
+
+    if not all([
+        INSTAGRAM_ACCESS_TOKEN,
+        INSTAGRAM_ACCOUNT_ID
+    ]):
+        raise RuntimeError("Instagram API configuration is incomplete")
+
+    url = (
+        f"https://graph.facebook.com/{GRAPH_API_VERSION}/"
+        f"{urllib.parse.quote(comment_id, safe='')}/replies"
+    )
+
+    data = urllib.parse.urlencode({
+        "message": message,
+        "access_token": INSTAGRAM_ACCESS_TOKEN
+    }).encode()
+
+    request = urllib.request.Request(
+        url,
+        data=data,
+        headers={
+            "Content-Type": "application/x-www-form-urlencoded"
+        },
+        method="POST"
+    )
+
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            result = json.loads(response.read().decode())
+
+        print(
+            "Instagram reply sent:",
+            {"comment_id": comment_id, "success": True},
+            flush=True
+        )
+
+        return result
+
+    except urllib.error.HTTPError as exc:
+        # Do not log the request URL, token or customer content.
+        print(
+            "Instagram reply API error:",
+            {"status": exc.code},
+            flush=True
+        )
+        raise
+
+
+# -----------------------------------------
+# PROCESS COMMENT
+# -----------------------------------------
+
+def process_comment(
+    comment_id: str,
+    comment_text: str,
+    commenter_id: str,
+    account_id: str
+):
+
+    if not INSTAGRAM_BUSINESS_ID:
+        print("Instagram business ID missing", flush=True)
+        return
+
+    if not comment_text.strip():
+        return
+
+    if not INSTAGRAM_ACCESS_TOKEN:
+        print("Instagram access token missing", flush=True)
+        return
+
+    try:
+        result = answer_question(
+            question=comment_text,
+            business_id=INSTAGRAM_BUSINESS_ID
+        )
+
+        answer = result.get("answer", "").strip()
+
+        if not answer:
+            print(
+                "No answer generated for comment:",
+                comment_id,
+                flush=True
+            )
+            return
+
+        # Avoid replying with an answer when no relevant source was found.
+        if not result.get("sources"):
+            print(
+                "No relevant business source found:",
+                comment_id,
+                flush=True
+            )
+            return
+
+        # Keep public comment replies concise.
+        if len(answer) > 900:
+            answer = answer[:897].rsplit(" ", 1)[0] + "..."
+
+        send_instagram_reply(
+            comment_id=comment_id,
+            message=answer
+        )
+
+        with comment_lock:
+            processed_comments.add(comment_id)
+
+    except Exception as exc:
+        print(
+            "Comment processing failed:",
+            {
+                "comment_id": comment_id,
+                "error_type": type(exc).__name__
+            },
+            flush=True
+        )
+
+    finally:
+        with comment_lock:
+            processing_comments.discard(comment_id)
+
+
+# -----------------------------------------
+# PROCESS WEBHOOK PAYLOAD
+# -----------------------------------------
+
+def process_webhook_payload(payload: dict):
+
+    if payload.get("object") != "instagram":
+        return
+
+    for entry in payload.get("entry", []):
+
+        account_id = str(entry.get("id", ""))
+
+        # Only process the Instagram account configured for this demo.
+        if account_id != str(INSTAGRAM_ACCOUNT_ID):
+            continue
+
+        for change in entry.get("changes", []):
+
+            if change.get("field") != "comments":
+                continue
+
+            value = change.get("value", {})
+
+            comment_id = str(value.get("id", ""))
+            comment_text = value.get("text", "")
+
+            commenter = value.get("from", {})
+            commenter_id = str(commenter.get("id", ""))
+
+            # Ignore events without the required information.
+            if not comment_id or not comment_text:
+                continue
+
+            # Ignore comments made by our own Instagram account.
+            if commenter_id == account_id:
+                continue
+
+            if str(value.get("self_ig_scoped_id", "")) == account_id:
+                continue
+
+            # Ignore replies to existing comments for this first version.
+            if value.get("parent_id"):
+                continue
+
+            with comment_lock:
+                if (
+                    comment_id in processed_comments
+                    or comment_id in processing_comments
+                ):
+                    continue
+
+                processing_comments.add(comment_id)
+
+            process_comment(
+                comment_id=comment_id,
+                comment_text=comment_text,
+                commenter_id=commenter_id,
+                account_id=account_id
+            )
+
+
+# -----------------------------------------
+# RECEIVE WEBHOOK EVENTS
+# -----------------------------------------
+
 @router.post("/webhook")
-async def receive_instagram_webhook(request: Request):
+async def receive_instagram_webhook(
+    request: Request,
+    background_tasks: BackgroundTasks
+):
+
     if not META_APP_SECRET:
         raise HTTPException(
             status_code=500,
@@ -222,7 +450,10 @@ async def receive_instagram_webhook(request: Request):
 
     raw_body = await request.body()
 
-    signature = request.headers.get("X-Hub-Signature-256", "")
+    signature = request.headers.get(
+        "X-Hub-Signature-256",
+        ""
+    )
 
     expected_signature = "sha256=" + hmac.new(
         META_APP_SECRET.encode("utf-8"),
@@ -244,14 +475,24 @@ async def receive_instagram_webhook(request: Request):
             detail="Invalid JSON payload."
         )
 
-    # Temporary: log event structure, not access tokens or secrets.
+    event_count = 0
+
     for entry in payload.get("entry", []):
-        for change in entry.get("changes", []):
-            print(
-                "Instagram webhook field:",
-                change.get("field"),
-                flush=True
-            )
+        event_count += len(entry.get("changes", []))
+
+    print(
+        "Instagram webhook received:",
+        {
+            "object": payload.get("object"),
+            "entry_count": len(payload.get("entry", [])),
+            "event_count": event_count
+        },
+        flush=True
+    )
+
+    background_tasks.add_task(
+        process_webhook_payload,
+        payload
+    )
 
     return {"status": "received"}
-
