@@ -9,7 +9,7 @@ import { Observable } from 'rxjs';
 export class DocumentService {
   private http = inject(HttpClient);
 
-  private apiUrl = 'http://127.0.0.1:8000/documents';
+  private apiUrl = 'https://business-knowledge-ai.onrender.com/documents';
 
   uploadDocument(file: File, businessId: string): Observable<any> {
     const formData = new FormData();
