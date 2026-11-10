@@ -123,7 +123,7 @@ export class App {
     sources?: string[];
   }[] = [];
 
-  businessId = 'demo-business-001';
+businessId = 'glowbeauty-demo-001';
   hasUploadedDocument = true;
 
   onFileSelected(event: Event) {
