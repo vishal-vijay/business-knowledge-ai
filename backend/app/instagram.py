@@ -245,14 +245,13 @@ async def receive_instagram_webhook(request: Request):
         )
 
     # Temporary: log event structure, not access tokens or secrets.
-    print(
-        "Instagram webhook received:",
-        {
-            "object": payload.get("object"),
-            "entry_count": len(payload.get("entry", []))
-        },
-        flush=True
-    )
+    for entry in payload.get("entry", []):
+        for change in entry.get("changes", []):
+            print(
+                "Instagram webhook field:",
+                change.get("field"),
+                flush=True
+            )
 
     return {"status": "received"}
 
