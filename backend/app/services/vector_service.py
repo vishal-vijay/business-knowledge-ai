@@ -6,35 +6,24 @@ from app.services.embedding_service import generate_embeddings
 
 DB_PATH = Path(__file__).resolve().parents[2] / "chroma_db"
 
-client = chromadb.PersistentClient(
-    path=str(DB_PATH)
-)
+client = chromadb.PersistentClient(path=str(DB_PATH))
 
+# New collection because the embedding model has changed.
 collection = client.get_or_create_collection(
-    name="business_documents"
+    name="business_documents_gemini"
 )
 
-def document_exists(document_id: str) -> bool:
-    result = collection.get(
-        where={"document_id": document_id},
-        limit=1
-    )
-    return len(result["ids"]) > 0
 
-def store_chunks(
-    chunks: list[str],
-    document_id: str,
-    filename: str
-):
+def store_chunks(chunks: list[str], document_id: str, filename: str):
     if not chunks:
-        return
+        return 0
 
-    embeddings = generate_embeddings(chunks)
+    embeddings = generate_embeddings(
+        chunks,
+        task_type="RETRIEVAL_DOCUMENT"
+    )
 
-    ids = [
-        f"{document_id}_{i}"
-        for i in range(len(chunks))
-    ]
+    ids = [f"{document_id}_{i}" for i in range(len(chunks))]
 
     metadatas = [
         {
@@ -55,9 +44,11 @@ def store_chunks(
     return len(chunks)
 
 
-
-def search_chunks(question: str, limit:int=5, document_id:str | None=None):
-    query_embedding = generate_embeddings([question])[0]
+def search_chunks(question: str, limit=5, document_id=None):
+    query_embedding = generate_embeddings(
+        [question],
+        task_type="RETRIEVAL_QUERY"
+    )[0]
 
     search_options = {
         "query_embeddings": [query_embedding],
@@ -66,8 +57,15 @@ def search_chunks(question: str, limit:int=5, document_id:str | None=None):
     }
 
     if document_id:
-        search_options["where"] = {
-            "document_id": document_id
-        }
+        search_options["where"] = {"document_id": document_id}
 
     return collection.query(**search_options)
+
+
+def document_exists(document_id: str) -> bool:
+    result = collection.get(
+        where={"document_id": document_id},
+        limit=1
+    )
+
+    return len(result["ids"]) > 0
