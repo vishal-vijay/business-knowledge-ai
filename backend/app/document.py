@@ -170,15 +170,19 @@ def ask_question(request: AskRequest):
             request.question,
             request.document_id
         )
-    
     except Exception as e:
-        if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
-            raise HTTPException(
-                status_code=429,
-                detail="AI service is temporarily busy. Please try again later."
-            )
-
-        raise HTTPException(
-            status_code=500,
-            detail="Unable to generate an answer right now."
+        print(
+            f"ASK ERROR: {type(e).__name__}: {e}",
+            flush=True
         )
+
+    if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
+        raise HTTPException(
+            status_code=429,
+            detail="AI service is temporarily busy. Please try again later."
+        )
+
+    raise HTTPException(
+        status_code=500,
+        detail="Unable to generate an answer right now."
+    )
