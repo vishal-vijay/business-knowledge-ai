@@ -9,7 +9,11 @@ from pydantic import BaseModel
 from app.services.embedding_service import split_text
 from app.services.vector_service import store_chunks, search_chunks
 from app.services.answer_service import answer_question
-
+from app.services.vector_service import (
+    store_chunks,
+    search_chunks,
+    document_exists
+)
 router = APIRouter()
 
 UPLOAD_DIR = Path("uploads")
@@ -18,6 +22,7 @@ UPLOAD_DIR.mkdir(exist_ok=True)
 
 class SearchRequest(BaseModel):
     question: str
+    document_id: str
 
 
 class AskRequest(BaseModel):
@@ -102,9 +107,15 @@ async def upload_document(file: UploadFile = File(...)):
 
 @router.post("/search")
 def search_document(request: SearchRequest):
-
-    results = search_chunks(request.question)
-
+    if not request.document_id.strip():
+        raise HTTPException(
+        status_code=400,
+        detail="Document ID is required"
+        )
+    results = search_chunks(
+        question=request.question,
+        document_id=request.document_id
+    )
     documents = results.get("documents") or [[]]
     metadatas = results.get("metadatas") or [[]]
     distances = results.get("distances") or [[]]
@@ -147,14 +158,27 @@ def ask_question(request: AskRequest):
             detail="Document ID is required"
         )
 
+    if not document_exists(request.document_id):
+        raise HTTPException(
+        status_code=404,
+        detail="Document not found"
+        )
+
+
     try:
         return answer_question(
             request.question,
             request.document_id
         )
-
+    
     except Exception as e:
+        if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
+            raise HTTPException(
+                status_code=429,
+                detail="AI service is temporarily busy. Please try again later."
+            )
+
         raise HTTPException(
             status_code=500,
-            detail=f"Unable to generate answer: {str(e)}"
+            detail="Unable to generate an answer right now."
         )

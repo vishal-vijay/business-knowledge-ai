@@ -14,6 +14,12 @@ collection = client.get_or_create_collection(
     name="business_documents"
 )
 
+def document_exists(document_id: str) -> bool:
+    result = collection.get(
+        where={"document_id": document_id},
+        limit=1
+    )
+    return len(result["ids"]) > 0
 
 def store_chunks(
     chunks: list[str],
@@ -50,7 +56,7 @@ def store_chunks(
 
 
 
-def search_chunks(question: str, limit=5, document_id=None):
+def search_chunks(question: str, limit:int=5, document_id:str | None=None):
     query_embedding = generate_embeddings([question])[0]
 
     search_options = {
