@@ -46,7 +46,7 @@ import { ElementRef, ViewChild } from '@angular/core';
 <section>
   <h2>Ask Your Business Assistant</h2>
 
-<div class="chat-container" #chatContainer>    
+<div class="chat-container" #chatContainer>
   @for (msg of messages; track $index) {
       <div
         class="message"
@@ -83,7 +83,7 @@ import { ElementRef, ViewChild } from '@angular/core';
   />
 
   <button
-    [disabled]="asking || !documentId || !question().trim()"
+    [disabled]="asking || !hasUploadedDocument || !question().trim()"
     (click)="askQuestion(question())"
   >
     {{ asking ? 'Thinking...' : 'Send' }}
@@ -123,6 +123,9 @@ export class App {
     sources?: string[];
   }[] = [];
 
+  businessId = 'demo-business-001';
+  hasUploadedDocument = true;
+
   onFileSelected(event: Event) {
     const input = event.target as HTMLInputElement;
     this.selectedFile = input.files?.[0] ?? null;
@@ -138,63 +141,68 @@ export class App {
     this.error = '';
 
     this.documentService
-      .uploadDocument(this.selectedFile)
+      .uploadDocument(this.selectedFile, this.businessId)
       .pipe(
         finalize(() => {
           this.uploading = false;
           this.cdr.markForCheck();
-          console.log('Upload finished:', this.uploading);
         })
       )
       .subscribe({
         next: (response) => {
-          this.documentId = response.document_id;
-
+          this.hasUploadedDocument = true;
           this.message =
             `${response.filename} uploaded successfully. ` +
             `${response.pages} pages processed.`;
 
           this.uploading = false;
+          this.cdr.markForCheck();
         },
         error: (err) => {
           this.error =
             err.error?.detail || 'Document upload failed.';
 
           this.uploading = false;
+          this.cdr.markForCheck();
         }
       });
   }
 
   askQuestion(question: string) {
-    if (!question.trim() || !this.documentId || this.asking) return;
+    if (!question.trim() || this.asking) return;
 
-    // Add user message
     this.messages.push({
       role: 'user',
       content: question
     });
+
     this.cdr.detectChanges();
     this.scrollToBottom();
+
     this.asking = true;
     this.question.set('');
     this.chatError = '';
 
     this.documentService
-      .askQuestion(question, this.documentId)
+      .askQuestion(question, this.businessId)
       .subscribe({
         next: (response) => {
-
-          // Add AI response
           this.messages.push({
             role: 'assistant',
             content: response.answer,
             html: marked.parse(response.answer) as string,
-            sources: response.sources
+            sources: [
+              ...new Set(
+                response.sources.map(
+                  (source: { filename: string }) => source.filename
+                )
+              )
+            ]
           });
 
           this.asking = false;
           this.cdr.markForCheck();
-          this.scrollToBottom()
+          this.scrollToBottom();
         },
 
         error: (err) => {
@@ -207,16 +215,16 @@ export class App {
       });
   }
 
-private scrollToBottom() {
-  requestAnimationFrame(() => {
-    const container = this.chatContainer?.nativeElement;
+  private scrollToBottom() {
+    requestAnimationFrame(() => {
+      const container = this.chatContainer?.nativeElement;
 
-    if (!container) return;
+      if (!container) return;
 
-    container.scrollTo({
-      top: container.scrollHeight,
-      behavior: 'smooth'
+      container.scrollTo({
+        top: container.scrollHeight,
+        behavior: 'smooth'
+      });
     });
-  });
-}
+  }
 }

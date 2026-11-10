@@ -11,9 +11,11 @@ export class DocumentService {
 
   private apiUrl = 'http://127.0.0.1:8000/documents';
 
-  uploadDocument(file: File): Observable<any> {
+  uploadDocument(file: File, businessId: string): Observable<any> {
     const formData = new FormData();
+
     formData.append('file', file);
+    formData.append('business_id', businessId);
 
     return this.http.post(
       `${this.apiUrl}/upload`,
@@ -21,15 +23,18 @@ export class DocumentService {
     );
   }
 
-  askQuestion(question: string, documentId: string) {
+  askQuestion(question: string, businessId: string) {
     return this.http.post<{
       answer: string;
-      sources: string[];
+      sources: {
+        filename: string;
+        document_id: string;
+      }[];
     }>(
       `${this.apiUrl}/ask`,
       {
         question,
-        document_id: documentId
+        business_id: businessId
       }
     );
   }

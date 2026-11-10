@@ -1,5 +1,5 @@
 
-from fastapi import APIRouter, UploadFile, File, HTTPException
+from fastapi import APIRouter, UploadFile, File, HTTPException, Form
 from pathlib import Path
 from pypdf import PdfReader
 from io import BytesIO
@@ -9,11 +9,7 @@ from pydantic import BaseModel
 from app.services.embedding_service import split_text
 from app.services.vector_service import store_chunks, search_chunks
 from app.services.answer_service import answer_question
-from app.services.vector_service import (
-    store_chunks,
-    search_chunks,
-    document_exists
-)
+
 router = APIRouter()
 
 UPLOAD_DIR = Path("uploads")
@@ -22,16 +18,26 @@ UPLOAD_DIR.mkdir(exist_ok=True)
 
 class SearchRequest(BaseModel):
     question: str
-    document_id: str
+    business_id: str
 
 
 class AskRequest(BaseModel):
     question: str
-    document_id: str
+    business_id: str
 
 
 @router.post("/upload")
-async def upload_document(file: UploadFile = File(...)):
+async def upload_document(
+    business_id: str = Form(...),
+    file: UploadFile = File(...)
+):
+    business_id = business_id.strip()
+
+    if not business_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Business ID is required"
+        )
 
     if not file.filename or not file.filename.lower().endswith(".pdf"):
         raise HTTPException(
@@ -63,7 +69,6 @@ async def upload_document(file: UploadFile = File(...)):
 
     except HTTPException:
         raise
-
     except Exception:
         raise HTTPException(
             status_code=400,
@@ -77,25 +82,24 @@ async def upload_document(file: UploadFile = File(...)):
         )
 
     safe_name = Path(file.filename).name
-
-    file_path = UPLOAD_DIR / safe_name
-    file_path.write_bytes(content)
-
-    # Generate unique document ID
     document_id = str(uuid4())
 
-    # Split extracted text into chunks
+    # Unique path avoids filename collisions.
+    file_path = UPLOAD_DIR / f"{document_id}_{safe_name}"
+    file_path.write_bytes(content)
+
     chunks = split_text(extracted_text)
 
-    # Generate embeddings and store chunks
     total_chunks = store_chunks(
         chunks=chunks,
         document_id=document_id,
-        filename=safe_name
+        filename=safe_name,
+        business_id=business_id
     )
 
     return {
         "message": "Document uploaded successfully",
+        "business_id": business_id,
         "document_id": document_id,
         "filename": safe_name,
         "pages": len(pdf.pages),
@@ -106,16 +110,24 @@ async def upload_document(file: UploadFile = File(...)):
 
 
 @router.post("/search")
-def search_document(request: SearchRequest):
-    if not request.document_id.strip():
+def search_documents(request: SearchRequest):
+    if not request.question.strip():
         raise HTTPException(
-        status_code=400,
-        detail="Document ID is required"
+            status_code=400,
+            detail="Question cannot be empty"
         )
+
+    if not request.business_id.strip():
+        raise HTTPException(
+            status_code=400,
+            detail="Business ID is required"
+        )
+
     results = search_chunks(
         question=request.question,
-        document_id=request.document_id
+        business_id=request.business_id
     )
+
     documents = results.get("documents") or [[]]
     metadatas = results.get("metadatas") or [[]]
     distances = results.get("distances") or [[]]
@@ -132,6 +144,7 @@ def search_document(request: SearchRequest):
             {
                 "text": text,
                 "source": metadata["filename"],
+                "document_id": metadata["document_id"],
                 "chunk_index": metadata["chunk_index"],
                 "distance": distance
             }
@@ -143,32 +156,25 @@ def search_document(request: SearchRequest):
         ]
     }
 
+
 @router.post("/ask")
 def ask_question(request: AskRequest):
-
     if not request.question.strip():
         raise HTTPException(
             status_code=400,
             detail="Question cannot be empty"
         )
 
-    if not request.document_id.strip():
+    if not request.business_id.strip():
         raise HTTPException(
             status_code=400,
-            detail="Document ID is required"
+            detail="Business ID is required"
         )
-
-    if not document_exists(request.document_id):
-        raise HTTPException(
-        status_code=404,
-        detail="Document not found"
-        )
-
 
     try:
         return answer_question(
-            request.question,
-            request.document_id
+            question=request.question,
+            business_id=request.business_id
         )
 
     except Exception as e:

@@ -2,6 +2,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.document import router as document_router
+from app.instagram import router as instagram_router
+
 
 app = FastAPI(
     title="Business Knowledge AI",
@@ -25,6 +27,11 @@ app.include_router(
     tags=["Documents"]
 )
 
+app.include_router(
+    instagram_router,
+    prefix="/instagram",
+    tags=["Instagram"]
+)
 
 @app.get("/")
 def home():
