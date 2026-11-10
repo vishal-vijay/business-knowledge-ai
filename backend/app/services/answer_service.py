@@ -18,8 +18,12 @@ MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 if not API_KEY:
     raise RuntimeError("GEMINI_API_KEY is missing from backend/.env")
 
-client = genai.Client(api_key=API_KEY)
-
+client = genai.Client(
+    api_key=API_KEY,
+    http_options=types.HttpOptions(
+        api_version="v1beta"
+    )
+)
 # In-memory response cache
 response_cache = {}
 
