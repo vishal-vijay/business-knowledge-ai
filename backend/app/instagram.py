@@ -356,7 +356,19 @@ def process_comment(
             processed_comments.add(comment_id)
 
     except Exception as exc:
-        print(
+        error_message = str(exc)
+        
+        if "429" in error_message or "RESOURCE_EXHAUSTED" in error_message:
+            with comment_lock:
+                processed_comments.add(comment_id)
+
+            print(
+            "Gemini quota exhausted. Skipping comment:",
+            comment_id,
+            flush=True
+            )
+        else:
+            print(
             "Comment processing failed:",
             {
                 "comment_id": comment_id,
